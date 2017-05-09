@@ -26,8 +26,6 @@ import org.apache.spark.mllib.linalg.distributed.{IndexedRow, IndexedRowMatrix}
 import org.apache.spark.rdd.RDD
 
 
-
-
 /**
  * Implementation of the Expectation Maximization algorithm
  * for Probabilistic PCA shown by (Roweis 1997)
@@ -64,8 +62,8 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
     def vectorIndexer: ((Vector, Long)) => IndexedRow = {
       t: (Vector, Long) => new IndexedRow(t._2, t._1)}
     val mat = new IndexedRowMatrix(scaledSources.zipWithIndex().map[IndexedRow](vectorIndexer))
-    // val wSeed = Matrices.randn(numFeatures, k, new Random(seed))
-    val wSeed = getWSeed(numFeatures, k)
+    val wSeed = Matrices.randn(numFeatures, k, new Random(seed))
+    //val wSeed = getWSeed(numFeatures, k)
     val wEM = em(wSeed, mat, tol, maxIterations)
     new PPCAModel(k, wEM)
   }
@@ -95,8 +93,7 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
       }
     }
     val w = emStep(wSeed, getZTr(wSeed, x), maxIterations) // First E-step to initialize
-    val wOrtho = qr(toBDM(w))
-    w
+    Matrices.dense(w.numRows, w.numCols, qr(toBDM(w)).q.data.slice(0, w.numCols*w.numRows)) // Q1
   }
 
   /**
@@ -119,9 +116,10 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
   @Since("2.3")
   private def distributedFrobenius(mat1: IndexedRowMatrix,
                                    mat2: IndexedRowMatrix): Double = {
+    val blkSumSqr = (blk: ((Int, Int), Matrix)) => blk._2.toArray.map(math.pow(_, 2)).sum
     val subBlocks = mat1.toBlockMatrix().subtract(mat2.toBlockMatrix()).blocks
-    def blkToSqrSum(blk: ((Int, Int), Matrix)): Double = blk._2.toArray.map(math.pow(_, 2)).sum
-    math.sqrt(subBlocks.map(blkToSqrSum).sum)
+    val totalSum = subBlocks.map(blkSumSqr).sum()
+    math.sqrt(totalSum)
   }
 
   /**
