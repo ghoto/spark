@@ -35,7 +35,7 @@ class PPCASuite extends SparkFunSuite with MLlibTestSparkContext{
   test("PPCA") {
     val w = new PPCA(2).fit(dataRDD, seed = 1).getW
     println(w.numRows, w.numCols)
-    println(w.transpose.multiply(w.asInstanceOf[DenseMatrix]))
+    println(w)
     //println(new PPCA(3).fit(dataRDD, seed = 1).getW)
   }
 }

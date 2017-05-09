@@ -21,8 +21,8 @@ import breeze.linalg.{inv, qr, DenseMatrix => BDM}
 import java.util.Random
 
 import org.apache.spark.annotation.Since
-import org.apache.spark.mllib.linalg.{DenseMatrix, Matrices, Matrix, Vector}
-import org.apache.spark.mllib.linalg.distributed.{IndexedRow, IndexedRowMatrix}
+import org.apache.spark.mllib.linalg.{Matrices, Matrix, Vector}
+import org.apache.spark.mllib.linalg.distributed.{BlockMatrix, IndexedRow, IndexedRowMatrix}
 import org.apache.spark.rdd.RDD
 
 
@@ -62,8 +62,8 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
     def vectorIndexer: ((Vector, Long)) => IndexedRow = {
       t: (Vector, Long) => new IndexedRow(t._2, t._1)}
     val mat = new IndexedRowMatrix(scaledSources.zipWithIndex().map[IndexedRow](vectorIndexer))
-    val wSeed = Matrices.randn(numFeatures, k, new Random(seed))
-    //val wSeed = getWSeed(numFeatures, k)
+    // val wSeed = Matrices.randn(numFeatures, k, new Random(seed))
+    val wSeed = getWSeed(numFeatures, k)
     val wEM = em(wSeed, mat, tol, maxIterations)
     new PPCAModel(k, wEM)
   }
@@ -79,20 +79,21 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
    */
   @Since("2.3")
   private def em(wSeed: Matrix, x: IndexedRowMatrix, tol: Double, maxIterations: Int): Matrix = {
-    def emStep(wOld: Matrix, zTrOld: IndexedRowMatrix, iteration: Int): Matrix = {
+    def emStep(wOld: Matrix, iteration: Int): Matrix = {
       if (iteration == 0) {
         wOld
       } else {
-        val wNew = getW(zTrOld, x) // M-step
-        val zTrNew = getZTr(wNew, x) // E-step
-        if (distributedFrobenius(zTrNew, zTrOld) < tol) {
+        val zTr = getZTr(wOld, x) // E-step
+        val wNew = getW(zTr, x) // M-step
+        val xReconstructed = zTr.multiply(wNew.transpose).toBlockMatrix()
+        if (mse(x.toBlockMatrix(), xReconstructed) < tol) {
           wNew
         } else {
-          emStep(wNew, zTrNew, iteration - 1)
+          emStep(wNew, iteration - 1)
         }
       }
     }
-    val w = emStep(wSeed, getZTr(wSeed, x), maxIterations) // First E-step to initialize
+    val w = emStep(wSeed, maxIterations) // First E-step to initialize
     Matrices.dense(w.numRows, w.numCols, qr(toBDM(w)).q.data.slice(0, w.numCols*w.numRows)) // Q1
   }
 
@@ -114,10 +115,10 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
   }
 
   @Since("2.3")
-  private def distributedFrobenius(mat1: IndexedRowMatrix,
-                                   mat2: IndexedRowMatrix): Double = {
+  private def mse(mat1: BlockMatrix,
+                                   mat2: BlockMatrix): Double = {
     val blkSumSqr = (blk: ((Int, Int), Matrix)) => blk._2.toArray.map(math.pow(_, 2)).sum
-    val subBlocks = mat1.toBlockMatrix().subtract(mat2.toBlockMatrix()).blocks
+    val subBlocks = mat1.subtract(mat2).blocks
     val totalSum = subBlocks.map(blkSumSqr).sum()
     math.sqrt(totalSum)
   }
