@@ -83,7 +83,7 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
       if (iteration == 0) {
         wOld
       } else {
-        val zTr = getZTr(wOld, x) // E-step
+        val zTr = getZ(wOld, x) // E-step
         val wNew = getW(zTr, x) // M-step
         val xReconstructed = zTr.multiply(wNew.transpose).toBlockMatrix()
         if (mse(x.toBlockMatrix(), xReconstructed) < tol) {
@@ -135,24 +135,23 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
    * @return
    */
   @Since("2.3")
-  private def getZTr(w: Matrix, x: IndexedRowMatrix): IndexedRowMatrix = {
+  private def getZ(w: Matrix, x: IndexedRowMatrix): IndexedRowMatrix = {
     val wBrz = toBDM(w)
-    // alpha W = inc(W'W)'
-    val alpha = wBrz * inv(wBrz.t * wBrz).t
+    val alpha = wBrz * inv(wBrz.t * wBrz)
     x.multiply(alpha)
   }
 
   /**
    * Computes the factor loading matrix
-   * W = X'Z'inv(ZZ')
-   * @param zTr projection of data in low dimensional space
+   * W = X'Z inv(Z'Z)
+   * @param z projection of data in low dimensional space
    * @param x mean centered samples
    * @return
    */
-  private def getW(zTr: IndexedRowMatrix, x: IndexedRowMatrix): Matrix = {
-    val zzInv = inv(zTr.toBlockMatrix().transpose.multiply(zTr.toBlockMatrix()).toBreeze())
-    // beta = Z'inv(ZZ')
-    val beta = zTr.multiply(zzInv).toBreeze()
+  private def getW(z: IndexedRowMatrix, x: IndexedRowMatrix): Matrix = {
+    val zzInv = inv(z.toBlockMatrix().transpose.multiply(z.toBlockMatrix()).toBreeze())
+    // beta = Z inv(Z'Z)
+    val beta = z.multiply(zzInv).toBreeze()
     x.toBlockMatrix().transpose.toIndexedRowMatrix().multiply(beta).toBreeze()
   }
 }
