@@ -32,8 +32,12 @@ class PPCASuite extends SparkFunSuite with MLlibTestSparkContext{
 
   private lazy val dataRDD: RDD[Vector] = spark.sparkContext.parallelize(data)
 
+  test("PCA") {
+    println(new PCA(2).fit(dataRDD).pc)
+  }
+
   test("PPCA") {
-    val w = new PPCA(2).fit(dataRDD, seed = 1).getW
+    val w = new PPCA(2).fit(dataRDD, seed = 2).getW
     println(w.numRows, w.numCols)
     println(w)
     //println(new PPCA(3).fit(dataRDD, seed = 1).getW)

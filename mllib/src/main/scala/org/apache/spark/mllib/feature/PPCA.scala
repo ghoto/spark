@@ -17,7 +17,9 @@
 
 package org.apache.spark.mllib.feature
 
-import breeze.linalg.{inv, qr, DenseMatrix => BDM}
+import breeze.linalg.{inv, norm, svd,
+DenseMatrix => BDM, DenseVector => BDV, Matrix => BM}
+import breeze.linalg.svd.SVD
 import java.util.Random
 
 import org.apache.spark.annotation.Since
@@ -37,14 +39,6 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
   require(k > 0,
   s"Number of principal components must be positive but got ${k}")
 
-  private implicit def toMLLib : BDM[Double] => Matrix = {
-    (m: BDM[Double]) => Matrices.dense(m.rows, m.cols, m.data)
-  }
-
-  private implicit def toBDM : Matrix => BDM[Double] = {
-    (m: Matrix) => new BDM(m.numRows, m.numCols, m.toArray)
-  }
-
   /**
    * Computes a [[PPCAModel]] that contains the transformation
    * matrix that convert x vectors into the latent space
@@ -62,8 +56,8 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
     def vectorIndexer: ((Vector, Long)) => IndexedRow = {
       t: (Vector, Long) => new IndexedRow(t._2, t._1)}
     val mat = new IndexedRowMatrix(scaledSources.zipWithIndex().map[IndexedRow](vectorIndexer))
-    // val wSeed = Matrices.randn(numFeatures, k, new Random(seed))
-    val wSeed = getWSeed(numFeatures, k)
+    val wSeed = Matrices.randn(numFeatures, k, new Random(seed))
+//    val wSeed = getWSeed(numFeatures, k)
     val wEM = em(wSeed, mat, tol, maxIterations)
     new PPCAModel(k, wEM)
   }
@@ -79,40 +73,48 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
    */
   @Since("2.3")
   private def em(wSeed: Matrix, x: IndexedRowMatrix, tol: Double, maxIterations: Int): Matrix = {
-    def emStep(wOld: Matrix, iteration: Int): Matrix = {
+    val xRdd = x.rows.map((iV) => (iV.index, iV.vector))
+    val xTxTrace = xRdd.map((t: (Long, Vector)) => math.pow(norm(t._2.asBreeze), 2)).sum()
+    def emStep(wOld: Matrix, ssOld: Double, iteration: Int): Matrix = {
       if (iteration == 0) {
         wOld
       } else {
-        val zTr = getZ(wOld, x) // E-step
-        val wNew = getW(zTr, x) // M-step
-        val xReconstructed = zTr.multiply(wNew.transpose).toBlockMatrix()
-        if (mse(x.toBlockMatrix(), xReconstructed) < tol) {
+        val (mu, sigma) = expectation(wOld, x, ssOld)
+        val (wNew, ssNew) = maximization(mu, x, sigma, wOld, xRdd, xTxTrace)
+        val xReconstructed = mu.multiply(wNew.transpose).toBlockMatrix()
+        val mse = this.mse(x.toBlockMatrix(), xReconstructed)
+        val SVD(u: BDM[Double], s: BDV[Double], vT) = svd(wNew.asBreeze.toDenseMatrix)
+        println(s"Iteration ${maxIterations - iteration} MSE=${mse} ss=${ssNew}")
+        println(s)
+        println(u)
+        println()
+        if (mse < tol) {
           wNew
         } else {
-          emStep(wNew, iteration - 1)
+          emStep(wNew, ssNew, iteration - 1)
         }
       }
     }
-    val w = emStep(wSeed, maxIterations) // First E-step to initialize
-    Matrices.dense(w.numRows, w.numCols, qr(toBDM(w)).q.data.slice(0, w.numCols*w.numRows)) // Q1
+    val w = emStep(wSeed, 10, maxIterations) // First E-step to initialize
+    w
   }
 
-  /**
-   * Create initial directions over the first d axes
-   * (1, 0, 0)
-   * (0, 1, 0)
-   * (0, 0, 1)
-   * (0, 0, 0)
-   * (0, 0, 0)
-   * @param d number of features
-   * @param k number of dimensions of latent space
-   * @return
-   */
-  @Since("2.3")
-  private def getWSeed(d: Int, k: Int): Matrix = {
-    require(k <= d, s"k=${k} is greater than number of features d=${d}")
-    Matrices.dense(d, k, Matrices.eye(d).data.slice(0, k * d))
-  }
+//  /**
+//   * Create initial directions over the first d axes
+//   * (1, 0, 0)
+//   * (0, 1, 0)
+//   * (0, 0, 1)
+//   * (0, 0, 0)
+//   * (0, 0, 0)
+//   * @param d number of features
+//   * @param k number of dimensions of latent space
+//   * @return
+//   */
+//  @Since("2.3")
+//  private def getWSeed(d: Int, k: Int): Matrix = {
+//    require(k <= d, s"k=${k} is greater than number of features d=${d}")
+//    Matrices.dense(d, k, Matrices.eye(d).data.slice(0, k * d))
+//  }
 
   @Since("2.3")
   private def mse(mat1: BlockMatrix,
@@ -135,25 +137,51 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
    * @return
    */
   @Since("2.3")
-  private def getZ(w: Matrix, x: IndexedRowMatrix): IndexedRowMatrix = {
-    val wBrz = toBDM(w)
-    val alpha = wBrz * inv(wBrz.t * wBrz)
-    x.multiply(alpha)
+  private def expectation(w: Matrix,
+                          x: IndexedRowMatrix,
+                          ss: Double = 0.0): (IndexedRowMatrix, BM[Double]) = {
+    val n = x.numRows().toDouble
+    val d = x.numCols().toInt
+    val wBrz = w.asBreeze.toDenseMatrix
+    val alpha = inv(BDM.eye[Double](d) * ss + wBrz * wBrz.t) * wBrz
+    val mu = x.multiply(Matrices.fromBreeze(alpha))
+    val sigma = BDM.eye[Double](w.numCols) * n -
+      alpha.t * wBrz * n +
+      mu.computeGramianMatrix().asBreeze.toDenseMatrix
+    (mu, sigma)
   }
 
   /**
    * Computes the factor loading matrix
    * W = X'Z inv(Z'Z)
-   * @param z projection of data in low dimensional space
    * @param x mean centered samples
    * @return
    */
-  private def getW(z: IndexedRowMatrix, x: IndexedRowMatrix): Matrix = {
-    val zzInv = inv(z.toBlockMatrix().transpose.multiply(z.toBlockMatrix()).toBreeze())
-    // beta = Z inv(Z'Z)
-    val beta = z.multiply(zzInv).toBreeze()
-    x.toBlockMatrix().transpose.toIndexedRowMatrix().multiply(beta).toBreeze()
+  private def maximization(mu: IndexedRowMatrix,
+                           x: IndexedRowMatrix,
+                           sigma: BM[Double],
+                           wOld: Matrix,
+                           xRdd: RDD[(Long, Vector)],
+                           xTxTrace: Double): (Matrix, Double) = {
+    // Compute new loading factor
+    val sigmaInv = inv(sigma.toDenseMatrix)
+    val beta = mu.multiply(Matrices.fromBreeze(sigmaInv))
+    val wNew = x.toBlockMatrix().transpose.multiply(beta.toBlockMatrix()).toLocalMatrix()
+    // ssNew = trace[X'X - W mhu'X]/nd
+    // ssNew = (trace[X'X] - trace[X'mhuW'])/nd
+    // ssNew = (tr1 - tr2)/nd
+    //
+    // Note that traces apply only in diagonal
+    // therefore there isn't needed to compute the
+    // whole matrix multiplications
+    val muWt = mu.multiply(wOld.transpose)
+    val muWtRdd = muWt.rows.map((iV) => (iV.index, iV.vector))
+    val xMuWtRdd = xRdd.join(muWtRdd)
+    val tr2 = xMuWtRdd.map((t) => t._2._1.asBreeze dot t._2._2.asBreeze).sum()
+    val ssNew = (xTxTrace - tr2)/(mu.numRows() * wNew.numCols)
+    (wNew, ssNew)
   }
+
 }
 
 /**
