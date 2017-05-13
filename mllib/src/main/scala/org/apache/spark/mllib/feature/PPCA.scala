@@ -35,7 +35,7 @@ import org.apache.spark.rdd.RDD
  * @param k number of principal components
  */
 @Since("2.3")
-class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
+class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100, sensible: Boolean = true) {
   require(k > 0,
   s"Number of principal components must be positive but got ${k}")
 
@@ -95,7 +95,7 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
         }
       }
     }
-    val w = emStep(wSeed, 10, maxIterations) // First E-step to initialize
+    val w = emStep(wSeed, 0, maxIterations) // First E-step to initialize
     w
   }
 
@@ -142,8 +142,16 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
                           ss: Double = 0.0): (IndexedRowMatrix, BM[Double]) = {
     val n = x.numRows().toDouble
     val d = x.numCols().toInt
+    val kd = 1.0/(k * d)
     val wBrz = w.asBreeze.toDenseMatrix
-    val alpha = inv(BDM.eye[Double](d) * ss + wBrz * wBrz.t) * wBrz
+    // Equivalent to
+    // val alpha = inv(BDM.eye[Double](d) * ss + wBrz * wBrz.t) * wBrz
+    // But operations are kxk instead of dxd
+    val alpha = if (ss > 0) {
+      wBrz * inv(BDM.eye[Double](w.numCols) + wBrz.t * wBrz/ss) * kd
+    } else {
+      wBrz * inv(wBrz.t * wBrz) * kd
+    }
     val mu = x.multiply(Matrices.fromBreeze(alpha))
     val sigma = BDM.eye[Double](w.numCols) * n -
       alpha.t * wBrz * n +
@@ -167,19 +175,23 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 100) {
     val sigmaInv = inv(sigma.toDenseMatrix)
     val beta = mu.multiply(Matrices.fromBreeze(sigmaInv))
     val wNew = x.toBlockMatrix().transpose.multiply(beta.toBlockMatrix()).toLocalMatrix()
-    // ssNew = trace[X'X - W mhu'X]/nd
-    // ssNew = (trace[X'X] - trace[X'mhuW'])/nd
-    // ssNew = (tr1 - tr2)/nd
-    //
-    // Note that traces apply only in diagonal
-    // therefore there isn't needed to compute the
-    // whole matrix multiplications
-    val muWt = mu.multiply(wOld.transpose)
-    val muWtRdd = muWt.rows.map((iV) => (iV.index, iV.vector))
-    val xMuWtRdd = xRdd.join(muWtRdd)
-    val tr2 = xMuWtRdd.map((t) => t._2._1.asBreeze dot t._2._2.asBreeze).sum()
-    val ssNew = (xTxTrace - tr2)/(mu.numRows() * wNew.numCols)
-    (wNew, ssNew)
+    if (sensible) {
+      // ssNew = trace[X'X - W mhu'X]/nd
+      // ssNew = (trace[X'X] - trace[X'mhuW'])/nd
+      // ssNew = (tr1 - tr2)/nd
+      //
+      // Note that traces apply only in diagonal
+      // therefore there isn't needed to compute the
+      // whole matrix multiplications
+      val muWt = mu.multiply(wOld.transpose)
+      val muWtRdd = muWt.rows.map((iV) => (iV.index, iV.vector))
+      val xMuWtRdd = xRdd.join(muWtRdd)
+      val tr2 = xMuWtRdd.map((t) => t._2._1.asBreeze dot t._2._2.asBreeze).sum()
+      val ssNew = (xTxTrace - tr2)/(mu.numRows() * wNew.numCols)
+      (wNew, ssNew)
+    } else {
+      (wNew, 0)
+    }
   }
 
 }
