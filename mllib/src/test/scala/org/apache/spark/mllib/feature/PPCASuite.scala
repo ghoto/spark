@@ -36,12 +36,22 @@ class PPCASuite extends SparkFunSuite with MLlibTestSparkContext{
     println(new PCA(2).fit(dataRDD).pc)
   }
 
+  def euclidean(a: Array[Double], b: Array[Double]): Double = {
+    require(a.length == b.length,
+      s"Length ${a.length} is not ${b.length}")
+    math.sqrt(a.zip(b).par.map((t) => math.pow(t._1 - t._2, 2)).sum)
+  }
+
   test("PPCA") {
-    println(new PCA(2).fit(irisRDD).pc)
-    val w = new PPCA(2, maxIterations = 10, sensible = false).fit(irisRDD, seed = 3).getW
-    println(w.numRows, w.numCols)
-    println(w)
-    //println(new PPCA(3).fit(dataRDD, seed = 1).getW)
+    for (dataset <- Array(irisRDD, dataRDD)) {
+      val k = 1
+      val pcaModelBase = new PCA(k).fit(dataset)
+      val pcArray = pcaModelBase.pc.toArray.map(math.abs)
+      val ppca = new PPCA(k, sensible = false).fit(dataset)
+      val spca = new PPCA(k).fit(dataset)
+      assert(euclidean(pcArray, spca.getW.toArray.map(math.abs))/pcArray.length < 1E-4)
+      assert(euclidean(pcArray, ppca.getW.toArray.map(math.abs))/pcArray.length < 1E-4)
+    }
   }
 
   // Famous IRIS dataset (Fischer, 1936)
