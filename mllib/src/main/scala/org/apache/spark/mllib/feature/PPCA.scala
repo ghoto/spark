@@ -166,9 +166,13 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 25, sensible: B
       wBrz * inv(wBrz.t * wBrz) * kd
     }
     val mu = x.multiply(Matrices.fromBreeze(alpha))
-    val sigma = BDM.eye[Double](w.numCols) * n -
-      alpha.t * wBrz * n +
+    val sigma = if (ss > 0) {
+      BDM.eye[Double](w.numCols) * n -
+        alpha.t * wBrz * n +
+        mu.computeGramianMatrix().asBreeze.toDenseMatrix
+    } else {
       mu.computeGramianMatrix().asBreeze.toDenseMatrix
+    }
     (mu, sigma)
   }
 
