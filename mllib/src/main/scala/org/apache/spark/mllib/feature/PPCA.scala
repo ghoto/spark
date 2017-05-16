@@ -87,7 +87,7 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 25, sensible: B
       // e-step
       val (mu, sigma) = expectation(wOld, x, ssOld)
       // m-step
-      val wNew = sensibleMax(mu, x, sigma)
+      val wNew = newFactorLoadings(mu, x, sigma)
       val ssNew = if (sensible) {
         computeSs(mu, wOld, wNew, xRdd.get, xTxTrace.get)
       } else {
@@ -111,23 +111,6 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 25, sensible: B
     }
     emStep(wSeed, 0, maxIterations)
   }
-
-//  /**
-//   * Create initial directions over the first d axes
-//   * (1, 0, 0)
-//   * (0, 1, 0)
-//   * (0, 0, 1)
-//   * (0, 0, 0)
-//   * (0, 0, 0)
-//   * @param d number of features
-//   * @param k number of dimensions of latent space
-//   * @return
-//   */
-//  @Since("2.3")
-//  private def getWSeed(d: Int, k: Int): Matrix = {
-//    require(k <= d, s"k=${k} is greater than number of features d=${d}")
-//    Matrices.dense(d, k, Matrices.eye(d).data.slice(0, k * d))
-//  }
 
   @Since("2.3")
   private def mse(mat1: BlockMatrix,
@@ -201,7 +184,7 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 25, sensible: B
    * @param x mean centered samples
    * @return
    */
-  private def sensibleMax(mu: IndexedRowMatrix,
+  private def newFactorLoadings(mu: IndexedRowMatrix,
                            x: IndexedRowMatrix,
                            sigma: BM[Double]): Matrix = {
     // Compute new loading factor
@@ -209,42 +192,6 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 25, sensible: B
     val beta = mu.multiply(Matrices.fromBreeze(sigmaInv))
     x.toBlockMatrix().transpose.multiply(beta.toBlockMatrix()).toLocalMatrix()
   }
-
-  /**
-   * Computes the factor loading matrix
-   * W = X'Z inv(Z'Z)
-   * @param x mean centered samples
-   * @return
-   */
-  private def maximization(mu: IndexedRowMatrix,
-                           x: IndexedRowMatrix,
-                           sigma: BM[Double],
-                           wOld: Matrix,
-                           xRdd: RDD[(Long, Vector)],
-                           xTxTrace: Double): (Matrix, Double) = {
-    // Compute new loading factor
-    val sigmaInv = inv(sigma.toDenseMatrix)
-    val beta = mu.multiply(Matrices.fromBreeze(sigmaInv))
-    val wNew = x.toBlockMatrix().transpose.multiply(beta.toBlockMatrix()).toLocalMatrix()
-    if (sensible) {
-      // ssNew = trace[X'X - W mhu'X]/nd
-      // ssNew = (trace[X'X] - trace[X'mhuW'])/nd
-      // ssNew = (tr1 - tr2)/nd
-      //
-      // Note that traces apply only in diagonal
-      // therefore there isn't needed to compute the
-      // whole matrix multiplications
-      val muWt = mu.multiply(wOld.transpose)
-      val muWtRdd = muWt.rows.map((iV) => (iV.index, iV.vector))
-      val xMuWtRdd = xRdd.join(muWtRdd)
-      val tr2 = xMuWtRdd.map((t) => t._2._1.asBreeze dot t._2._2.asBreeze).sum()
-      val ssNew = (xTxTrace - tr2)/(mu.numRows() * wNew.numCols)
-      (wNew, ssNew)
-    } else {
-      (wNew, 0)
-    }
-  }
-
 
 }
 
