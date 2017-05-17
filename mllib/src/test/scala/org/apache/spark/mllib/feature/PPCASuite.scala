@@ -26,6 +26,13 @@ import org.apache.spark.rdd.RDD
 
 class PPCASuite extends SparkFunSuite with MLlibTestSparkContext{
 
+  private def timing[R](f: => R): R = {
+    val t0 = System.currentTimeMillis()
+    val res = f
+    println(s"Elapsed time in operation ${f.toString} = ${(System.currentTimeMillis() - t0)/1000}")
+    res
+  }
+
   private val data = Array(
     Vectors.sparse(5, Seq((1, 1.0), (3, 7.0))),
     Vectors.dense(2.0, 0.0, 3.0, 4.0, 5.0),
@@ -58,37 +65,41 @@ class PPCASuite extends SparkFunSuite with MLlibTestSparkContext{
 
   test("PPCA") {
     for (dataset <- Array(irisRDD, dataRDD)) {
-      val k = 1
+      val k = 4
       val pcaModelBase = new PCA(k).fit(dataset)
       val pcArray = pcaModelBase.pc.toArray.map(math.abs)
-      val ppca = new PPCA(k, sensible = false).fit(dataset)
-      val spca = new PPCA(k).fit(dataset)
+//      val ppca = new PPCA(k, sensible = false).fit(dataset, seed = 2)
+      val spca = new PPCA(k).fit(dataset, seed = 4)
+//      println(ppca.getW)
+//      println()
+      println(spca.getW)
+      println()
+      println(pcaModelBase.pc)
+      println()
       assert(euclidean(pcArray, spca.getW.toArray.map(math.abs))/pcArray.length < 1E-4)
-      assert(euclidean(pcArray, ppca.getW.toArray.map(math.abs))/pcArray.length < 1E-4)
+//      assert(euclidean(pcArray, ppca.getW.toArray.map(math.abs))/pcArray.length < 1E-4)
     }
   }
 
   test("PCA vs PPCA") {
-    val d = 2000
-    val n = 10000
-    val sparsity = 0.02
+    val d = 6000
+    val n = 20000
+    val k = 2
+    val sparsity = 0.1
     def rndVectors(seed: Int): Vector = {
       randomSparseVector(d, sparsity, new Random(seed))
     }
-    val dataRDD = spark.sparkContext.parallelize(Array.range(0, n).map(rndVectors))
-    val tPPCA0 = System.currentTimeMillis()
-    new PPCA(d / 2, sensible = false, maxIterations = 1).fit(dataRDD)
-    val etPPCA = (System.currentTimeMillis() - tPPCA0)/1000
-    println(s"PPCA ${etPPCA} seconds")
+    val dataRDD = timing(spark.sparkContext.parallelize(Array.range(0, n).map(rndVectors)))
+    timing(new PPCA(k).fit(dataRDD))
+    timing(new PCA(k).fit(dataRDD))
+//    val tPPCA0 = System.currentTimeMillis()
+//    new PPCA(k, sensible = false, maxIterations = 1).fit(dataRDD)
+//    val etPPCA = (System.currentTimeMillis() - tPPCA0)/1000
+//    println(s"PPCA ${etPPCA} seconds")
     val tSPCA0 = System.currentTimeMillis()
-    new PPCA(d / 2).fit(dataRDD)
+    new PPCA(k).fit(dataRDD)
     val etSPCA = (System.currentTimeMillis() - tSPCA0)/1000
     println(s"SPCA ${etSPCA} seconds")
-    val tPCA0 = System.currentTimeMillis()
-    new PCA(d / 2).fit(dataRDD)
-    val etPCA = (System.currentTimeMillis() - tPCA0)/1000
-    println(s"PCA ${etPCA} seconds")
-
   }
 
   // Famous IRIS dataset (Fischer, 1936)

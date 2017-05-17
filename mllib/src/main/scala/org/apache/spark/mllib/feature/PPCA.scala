@@ -17,7 +17,7 @@
 
 package org.apache.spark.mllib.feature
 
-import breeze.linalg.{eig, inv, norm, svd, DenseMatrix => BDM, DenseVector => BDV, Matrix => BM}
+import breeze.linalg.{inv, norm, svd, DenseMatrix => BDM, DenseVector => BDV, Matrix => BM}
 import breeze.linalg.svd.SVD
 import java.util.Random
 
@@ -34,9 +34,14 @@ import org.apache.spark.rdd.RDD
  * @param k number of principal components
  */
 @Since("2.3")
-class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 25, sensible: Boolean = true) {
+class PPCA (val k: Int,
+            tol: Double = 1E-4,
+            maxIterations: Int = 25,
+            sensible: Boolean = true) {
   require(k > 0,
   s"Number of principal components must be positive but got ${k}")
+
+  import PPCA._
 
   /**
    * Computes a [[PPCAModel]] that contains the transformation
@@ -144,8 +149,10 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 25, sensible: B
     // val alpha = inv(BDM.eye[Double](d) * ss + wBrz * wBrz.t) * wBrz
     // But operations are kxk instead of dxd
     val alpha = if (ss > 0) {
-      wBrz * inv(BDM.eye[Double](w.numCols) + wBrz.t * wBrz/ss) * kd
+      wBrz * inv(BDM.eye[Double](k) + wBrz.t * wBrz/ss) * kd
     } else {
+//      val SVD(wU, ws, _) = svd(wBrz)
+//      inv(wBrz * wBrz.t)* wBrz
       wBrz * inv(wBrz.t * wBrz) * kd
     }
     val mu = x.multiply(Matrices.fromBreeze(alpha))
@@ -173,8 +180,8 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 25, sensible: B
     // whole matrix multiplications
     val muWt = mu.multiply(wOld.transpose)
     val muWtRdd = muWt.rows.map((iV) => (iV.index, iV.vector))
-    val xMuWtRdd = xRdd.join(muWtRdd)
-    val tr2 = xMuWtRdd.map((t) => t._2._1.asBreeze dot t._2._2.asBreeze).sum()
+    val xMuWtRdd = xRdd.join(muWtRdd).map(t => (t._2._1, t._2._2))
+    val tr2 = trace(xMuWtRdd)
     (xTxTrace - tr2)/(mu.numRows() * wNew.numCols)
   }
 
@@ -190,9 +197,36 @@ class PPCA (val k: Int, tol: Double = 1E-4, maxIterations: Int = 25, sensible: B
     // Compute new loading factor
     val sigmaInv = inv(sigma.toDenseMatrix)
     val beta = mu.multiply(Matrices.fromBreeze(sigmaInv))
-    x.toBlockMatrix().transpose.multiply(beta.toBlockMatrix()).toLocalMatrix()
+    // This operation is the bottleneck
+    //    x.toBlockMatrix().transpose.multiply(beta.toBlockMatrix()).toLocalMatrix()
+    // Therefore do the multiplication by Rows using RDDs
+    distributedMul(x, beta)
   }
 
+}
+
+private object PPCA extends Serializable {
+
+  def distributedMul(a: IndexedRowMatrix, b: IndexedRowMatrix) : Matrix = {
+    val aRows = a.rows.map((iV) => (iV.index, iV.vector))
+    val aDim = a.numCols().toInt
+    val bRows = b.rows.map((iV) => (iV.index, iV.vector))
+    val bDim = b.numCols().toInt
+    val joint = aRows.join(bRows)
+    def vectorMul(e: (Long, (Vector, Vector))) : BDM[Double] = {
+      val v1 = BDM.create(aDim, 1, e._2._1.toArray)
+      val v2 = BDM.create[Double](1, bDim, e._2._2.toArray)
+      v1 * v2
+    }
+    Matrices.fromBreeze(joint.map(vectorMul).reduce(_ + _))
+  }
+
+  def trace(x: RDD[(Vector, Vector)]) : Double = {
+    def prod(t: (Vector, Vector)) : Double = {
+      t._1.toArray.zip(t._2.toArray).par.map(x => x._1 * x._2).sum
+    }
+    x.map(prod).sum()
+  }
 }
 
 /**
